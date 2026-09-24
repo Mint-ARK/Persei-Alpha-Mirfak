@@ -1,6 +1,8 @@
-# Persei-α-Mirfak
+# 天船三 (Persei-α-Mirfak)
 
 <div align="center">
+
+**简体中文** | [English](./README_EN.md)
 
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2B%20%7C%20Linux%20x64-0078D6?style=flat-square)
 ![Python Version](https://img.shields.io/badge/Python-3.10%2B%20(asyncio)-3776AB?style=flat-square&logo=python)
