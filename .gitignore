@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Databases & local state
+account.db
+account.db-journal
+account.db-shm
+account.db-wal
+account*.db
+*.db.bak
+
+# Logs & monitoring
+logs/
+*.log
+
+# Caches & temporary files
+cdn_cache/
+static_resources/
+.cache/
+
+# IDE & OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db

@@ -1,0 +1,2034 @@
+{
+ "_doc": "CORE 操作表（2026-08-15 老大定稿）：告诉 CORE 不同请求该如何进行数据操作。配置驱动，替代代码写死。",
+ "_ops": "数据操作原语：set_sign/claim_task/claim_task_batch/set_red_dot/set_currency/set_material/deduct/deduct_currency/deduct_materials/upsert/query/grant_items（已支持）| calc_hero_exp/deduct_piece/consume_equips/remove_equips（待补）| 2026-08-15 合入子代理 53 条",
+ "28010": {
+  "sc": 28011,
+  "name": "单个任务提交",
+  "validate": {
+   "required": [
+    "id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "claim_task",
+    "task_id": "req.id"
+   }
+  ],
+  "respond": {
+   "sc": 28011,
+   "template": {
+    "result": 0
+   },
+   "items": [
+    {
+     "item_id": 20002,
+     "item_num": 1
+    },
+    {
+     "item_id": 20002,
+     "item_num": 40
+    },
+    {
+     "item_id": 20002,
+     "item_num": 100
+    }
+   ]
+  }
+ },
+ "28014": {
+  "sc": 28015,
+  "name": "任务一键领取",
+  "validate": {
+   "required": [
+    "id_list"
+   ]
+  },
+  "apply": [
+   {
+    "op": "claim_task_batch",
+    "task_ids": "req.id_list"
+   }
+  ],
+  "respond": {
+   "sc": 28015,
+   "template": {
+    "result": 0
+   },
+   "items": [
+    {
+     "item_id": 20002,
+     "item_num": 1
+    },
+    {
+     "item_id": 20002,
+     "item_num": 40
+    },
+    {
+     "item_id": 20002,
+     "item_num": 100
+    }
+   ],
+   "extra_frames": [
+    {
+     "sc": 28007,
+     "hex": "0a0b08b1db0610a50318002000"
+    }
+   ]
+  }
+ },
+ "56002": {
+  "sc": 56002,
+  "name": "红点已读上报",
+  "validate": {
+   "required": [
+    "red_dot"
+   ]
+  },
+  "apply": [
+   {
+    "op": "set_red_dot",
+    "red_dot_id": "req.red_dot"
+   }
+  ],
+  "respond": {
+   "sc": 56002,
+   "empty_payload": true
+  }
+ },
+ "_20012_spec": {
+  "sc": 20013,
+  "name": "商店购买",
+  "cs_schema": {
+   "buy_goods_list": "repeated buy_goods_net_rec{buy_id:uint32,buy_num:uint32,cost_items:repeated item_net_rec{id:uint32,num:uint32},buy_type:uint32}",
+   "shop_id": "uint32",
+   "buy_source": "uint32"
+  },
+  "validate": {
+   "required": [
+    "buy_goods_list",
+    "shop_id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "query",
+    "desc": "遍历 req.buy_goods_list，逐件查 shopcfg[goods_id] 校验商品存在、商店开门、limit_num-buy_times>0（-1 不限）"
+   },
+   {
+    "op": "deduct",
+    "desc": "按 buy_goods_net_rec.cost_items 逐项扣减（客户端已算好 id/num；服务端应重算 shopcfg.cost*cost_num 校验，cost_type=2 时先扣钻石(item_id=1)再扣免费钻石(item_id=32)）"
+   },
+   {
+    "op": "buy_goods_expand",
+    "desc": "需新原语：按 shopcfg[goods_id].give_id/give/give_back_list 展开应发道具（ItemCfg[give_id] 类型：货币/材料直接发；福袋=SHOP_PACKS 按 param 展开；SCENE/HERO 特殊处理）"
+   },
+   {
+    "op": "grant",
+    "desc": "发放展开后的奖励（买一送一 give>1 时数量乘 buy_num*give）"
+   },
+   {
+    "op": "upsert",
+    "table": "store_purchase",
+    "row": "shop_id=req.shop_id, goods_id=buy_id, buy_times+=req.buy_num, next_refresh_timestamp=now+shopcfg.refresh_cycle, update_ts=now"
+   }
+  ],
+  "respond": {
+   "sc": 20013,
+   "template": {
+    "result": 0,
+    "give_items": "result.give_items",
+    "cost_items": "result.cost_items"
+   },
+   "items": "result.give_items"
+  },
+  "lua_source": "decompiled_v2/x64/game/action/shopaction.lua:127-267 (BuyItem 组装 buy_goods_list 并发 20012；ShopItemUpdate 回调 268-424 处理 give_items/福袋展开)；decompiled_v2/x64/game/data/shopdata.lua:25-37 (ShopItemUpdate 累加 buy_times)",
+  "notes": "cs_20012 字段见 lua_proto_messages.json:10562(cs_20012)/10531(buy_goods_net_rec)/1683(item_net_rec)；sc_20013(result, give_items, cost_items) 见 10587。cost_items 由客户端从 shopcfg 计算并携带，服务端必须重算校验。store_purchase 表(uid,shop_id,goods_id,buy_times,next_refresh_timestamp,update_ts) 见 account_db.py:271-279。sc 非 0 错误码：899=装备格满、406=道具失效。buy_type 语义：buyType==1 时换用第二组成本(福袋/皮肤类)，精确含义 unknown。shop_id 在 cs 里重复携带，客户端实际是遍历首个商品的 shop_id。"
+ },
+ "20014": {
+  "sc": 20015,
+  "name": "刷新单个商店",
+  "cs_schema": {
+   "shop_id": "uint32"
+  },
+  "validate": {
+   "required": [
+    "shop_id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "deduct_currency",
+    "currency_id": 1,
+    "num": 50,
+    "desc": "服务端自定刷新费：钻石×50（无本地配置，2026-08-15 定稿）"
+   },
+   {
+    "op": "query",
+    "sql": "SELECT goods_id FROM shop_goods WHERE shop_id=? ORDER BY goods_id",
+    "args": [
+     "req.shop_id"
+    ],
+    "as": "refresh_goods",
+    "desc": "刷新后商品列表（从 shop_goods 静态表重抽）"
+   }
+  ],
+  "respond": {
+   "sc": 20015,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/shopaction.lua:489-501 (RefreshSingleShop)；sc_20015 见 lua_proto_messages.json:10625",
+  "notes": "关联条目。刷新费自定（钻石×50），刷新后商品从 shop_goods 表按 shop_id 重抽（2026-08-15 老大定稿自定）。"
+ },
+ "_30004_spec": {
+  "sc": 30005,
+  "name": "邮件领附件",
+  "cs_schema": {
+   "id": "uint64"
+  },
+  "validate": {
+   "required": [
+    "id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "query",
+    "desc": "id==0 时取全部有附件的邮件（ReceiveAllMails 一键领取）；否则取 id 对应单封"
+   },
+   {
+    "op": "mail_collect_attachments",
+    "desc": "需新原语：解析 mail.detail JSON 中 attachment_list[{id,num,time_valid}]，逐项校验邮件存在/未过期/未领（attach_flag!=2），批量发道具（重复领取需幂等）"
+   },
+   {
+    "op": "grant",
+    "desc": "发放附件道具（同 item_net_rec id/num/time_valid）"
+   },
+   {
+    "op": "upsert",
+    "table": "mail",
+    "row": "detail JSON 内 attach_flag=2, read_flag=2（标记已领取，不删除邮件；客户端 MailData.GetMailAttachment 只改本地标记）"
+   }
+  ],
+  "respond": {
+   "sc": 30005,
+   "template": {
+    "result": 0,
+    "attachment_list": "result.attachment_list",
+    "success_mail_ids": "result.success_mail_ids"
+   },
+   "items": "result.attachment_list"
+  },
+  "lua_source": "decompiled_v2/x64/game/action/mailaction.lua:78-138 (TryToGetMailAttachment 发 30004；OnGetMailAttachment 用 success_mail_ids 标记+getReward(attachment_list))；decompiled_v2/x64/game/data/maildata.lua:257-273 (GetMailAttachment 置 attach_flag=2/read_flag=2)",
+  "notes": "注意：30004 是【领附件】，30008 才是【邮件详情】——与任务描述中‘30008 领附件 + 30004 确认’相反，以代码为准。cs_30004 见 lua_proto_messages.json:14077，sc_30005(attachment_list, success_mail_ids) 见 14089。mail 表(uid,mail_id,detail) 见 account_db.py:90-95。attachment_list 中 sub_type==404/1702 的限时道具带 time_valid。result=2100 表示无附件可领(客户端静默)。 【2026-08-16 规格稿让位：不可运行配置遮蔽可用 handler，改名禁注册，handler 接管（见 操作集体检报告_20260816.md）】"
+ },
+ "_30008_spec": {
+  "sc": 30009,
+  "name": "邮件详情(确认/已读)",
+  "cs_schema": {
+   "id": "uint64"
+  },
+  "validate": {
+   "required": [
+    "id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "query",
+    "desc": "按 mail_id 查 mail 表 detail（无则返回过期错误，客户端 OnGetMailDetailFromServer 失败即本地删）"
+   },
+   {
+    "op": "upsert",
+    "table": "mail",
+    "row": "detail JSON 内 read_flag=2（客户端读详情后置已读；服务端可同步或依赖客户端缓存，见 maildata.lua CacheReadFlag）"
+   }
+  ],
+  "respond": {
+   "sc": 30009,
+   "template": {
+    "result": 0,
+    "detail_info": "result.detail_info"
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/mailaction.lua:29-43 (TryToGetMailDetailFromServer)；decompiled_v2/x64/game/data/maildata.lua:198-255 (OnGetMailDetailFromServer)",
+  "notes": "cs_30008(id) 见 lua_proto_messages.json:14144，sc_30009(detail_info: mail_detail) 见 14156，mail_detail 见 14477。detail_info 包含 content_list/sender/mail_template_id/link_param 等，需从 mail 表 detail JSON 还原。客户端未发现单独的‘已读上报’请求，read_flag 由客户端本地缓存(mail_read_flag)维护，服务端可在详情/列表响应里带 read_flag 即可。 【2026-08-16 规格稿让位：不可运行配置遮蔽可用 handler，改名禁注册，handler 接管（见 操作集体检报告_20260816.md）】"
+ },
+ "_30006_spec": {
+  "sc": 30007,
+  "name": "删除邮件",
+  "cs_schema": {
+   "id": "uint64"
+  },
+  "validate": {
+   "required": [
+    "id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "query",
+    "desc": "id==0 时删除全部（TryToDeteleMail 传 0）；否则删单封"
+   },
+   {
+    "op": "upsert",
+    "table": "mail",
+    "row": "删除 mail 记录（uid,mail_id）"
+   }
+  ],
+  "respond": {
+   "sc": 30007,
+   "template": {
+    "result": 0,
+    "id_list": "result.id_list",
+    "no_need_data": []
+   },
+   "extra_frames": []
+  },
+  "lua_source": "decompiled_v2/x64/game/action/mailaction.lua:57-77 (DeleteOneMail/TryToDeteleMail)",
+  "notes": "关联条目。sc_30007 见 lua_proto_messages.json:14127。result 无 result 字段（见 14127-14141，只有 id_list/no_need_data），客户端按 id_list 长度判断成功。 【2026-08-16 让位代码版 MailDeleteOp】"
+ },
+ "14012": {
+  "sc": 14013,
+  "name": "英雄升星（神识超越）",
+  "cs_schema": {
+   "id": "uint32"
+  },
+  "validate": {
+   "required": [
+    "id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "query",
+    "sql": "SELECT star FROM hero WHERE uid=? AND id=?",
+    "args": [
+     "uid",
+     "req.id"
+    ],
+    "as": "hero"
+   },
+   {
+    "op": "upsert",
+    "table": "hero",
+    "row": {
+     "id": "req.id",
+     "star": 301
+    },
+    "keys": [
+     "uid",
+     "id"
+    ],
+    "desc": "升星+1(简化，完整需碎片/金币)"
+   }
+  ],
+  "respond": {
+   "sc": 14013,
+   "template": {
+    "result": 0
+   },
+   "extra_frames": [
+    {
+     "sc": 14007,
+     "hex": "0800",
+     "_original_note": "unknown（服务端推送更新后 hero 结构，素材真帧未挖）"
+    }
+   ]
+  },
+  "lua_source": "decompiled_v2/x64/game/action/heroaction.lua:349-360; tools/herotools.lua:997-1018; data/herodata.lua:246-254; config/herostarcfg.lua:1-203; const/heroconst.lua:18,21,75-77",
+  "notes": "升星消耗：金币=HeroStarCfg[当前star_id].gold_cost（如 star=100 阶段0 需100金币），碎片=HeroStarCfg.star_up（累加需求）。升星后 star 在 HeroStarCfg 中按 star+phase 推进（每 star 4 phase，MAX_STAR=6）。hero 表 detail 更新 star 字段。注意 unlock==0 时 14012 是解锁（消耗碎片达到 unlock_hero_need），逻辑不同（herotools.lua:1001-1003）。"
+ },
+ "14014": {
+  "sc": 14015,
+  "name": "英雄加经验/升级",
+  "cs_schema": {
+   "id": "uint32",
+   "item_list": "repeated {id:uint32, num:uint32} (ITEM_NET_REC)"
+  },
+  "validate": {
+   "required": [
+    "id",
+    "item_list"
+   ]
+  },
+  "apply": [
+   {
+    "op": "deduct_materials",
+    "items": "req.item_list",
+    "表": "material",
+    "来源": "heroaction.lua:224-228 客户端提交道具"
+   },
+   {
+    "op": "calc_hero_exp",
+    "hero_id": "req.id",
+    "exp_add": "auto",
+    "来源": "itemcfg.lua:24146-24258",
+    "desc": "从 req.item_list 自动换算经验(40101=500/40102=1000/40103=5000/40104=10000)"
+   }
+  ],
+  "respond": {
+   "sc": 14015,
+   "template": {
+    "result": 0
+   },
+   "extra_frames": [
+    {
+     "sc": 14007,
+     "hex": "0800",
+     "_original_note": "unknown（hero 更新推送，含 level/exp）"
+    }
+   ]
+  },
+  "lua_source": "decompiled_v2/x64/game/action/heroaction.lua:224-236; data/herodata.lua:84-90; config/itemcfg.lua:24146-24258; config/gamelevelsetting.lua:11..; config/gamesetting.lua:9-15,964-973; protocol/p14_pb.lua:126-130",
+  "notes": "升级扣经验道具（type=6 sub_type=601 的英雄作战记录），加 hero.exp，等级由 LvTools 用 hero_level_exp1 表（GameLevelSetting[level].hero_level_exp1）换算。SC_14015 仅 result；新 level/exp 通过 sc_14007 推送 hero（heroaction.lua:3-6 Bind 14007→ModifyHero）。升级上限受 hero_level_max=100 与当前突破 max_level 双重限制（herotools.lua:1353-1355）。"
+ },
+ "_14030_spec": {
+  "sc": 14031,
+  "name": "英雄技能升级",
+  "cs_schema": {
+   "hero_id": "uint32",
+   "skill_id": "uint32",
+   "num": "uint32"
+  },
+  "validate": {
+   "required": [
+    "hero_id",
+    "skill_id",
+    "num"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert",
+    "table": "hero",
+    "row": {
+     "id": "req.hero_id"
+    },
+    "keys": [
+     "uid",
+     "id"
+    ],
+    "desc": "技能升级(简化：技能等级更新需 skill_list JSON 处理，待完善)"
+   }
+  ],
+  "respond": {
+   "sc": 14031,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/heroaction.lua:311-324; data/herodata.lua:212-223; tools/skilltools.lua:86-129; config/skillcfg.lua:1-77; protocol/p14_pb.lua:150-155",
+  "notes": "技能升级消耗 SkillCfg[技能当前等级]['skill_cost'..槽位]（技能槽位=hero 技能列表 index，普攻1/技能2/...）。技能上限 hero_skill_level_max（gamesetting.lua:388），突破等级不足则不能升（skill_limitN）。响应仅 result。 【2026-08-16 让位代码版 SkillUpOp（原配置为空壳简化）】"
+ },
+ "14036": {
+  "sc": 14037,
+  "name": "英雄突破（升阶/等级上限提升）",
+  "cs_schema": {
+   "hero_id": "uint32"
+  },
+  "validate": {
+   "required": [
+    "hero_id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "query",
+    "sql": "SELECT break_level FROM hero WHERE uid=? AND id=?",
+    "args": [
+     "uid",
+     "req.hero_id"
+    ],
+    "as": "hero"
+   },
+   {
+    "op": "upsert",
+    "table": "hero",
+    "row": {
+     "id": "req.hero_id",
+     "break_level": 1
+    },
+    "keys": [
+     "uid",
+     "id"
+    ],
+    "desc": "突破+1(简化，完整需 HeroBreakCfg 成本)"
+   }
+  ],
+  "respond": {
+   "sc": 14037,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/heroaction.lua:216-223; data/herodata.lua:92-96; tools/herotools.lua:1363-1417; config/herobreakcfg.lua:1-120; protocol/p14_pb.lua:164-167",
+  "notes": "突破配置按 hero 种族 race + 当前 break_times 查 HeroBreakCfg（herotools.lua:1363-1373），消耗 cost（材料列表）与 cost_gold（金币，如 race1 首次 500 金币+16×40411）。成功后 break_level+1，解锁更高 max_level。响应仅 result。"
+ },
+ "_13014_spec": {
+  "sc": 13015,
+  "name": "装备强化",
+  "cs_schema": {
+   "equip_id": "uint64",
+   "equip_list": "repeated uint64（被吃掉的素材装备 id 列表）",
+   "mat_list": "repeated {id:uint32, num:uint32} (ITEM_NET_REC)"
+  },
+  "validate": {
+   "required": [
+    "equip_id",
+    "equip_list",
+    "mat_list"
+   ]
+  },
+  "apply": [
+   {
+    "op": "query",
+    "条件": "checkGold(需金币)（金币=预计获得经验×equip_strengthen_gold_cost.value[1]=每经验1金币）",
+    "来源": "equipaction.lua:70-72, gamesetting.lua:538-544"
+   },
+   {
+    "op": "deduct_materials",
+    "items": "req.mat_list（装备经验道具 40801/40802/40803）",
+    "表": "material",
+    "来源": "gamesetting.lua:974-982"
+   },
+   {
+    "op": "consume_equips",
+    "equip_ids": "req.equip_list（素材装备删除，其经验值转化为目标装备经验）",
+    "表": "equip",
+    "来源": "equipaction.lua:202-219, equipdata.lua:320-330"
+   },
+   {
+    "op": "deduct_currency",
+    "currency_id": "2(金币)",
+    "num": "获得经验数×1",
+    "来源": "equipaction.lua:93"
+   },
+   {
+    "op": "upsert",
+    "table": "equip",
+    "row": {
+     "id": "req.equip_id",
+     "detail.exp": "equip.exp + 获得经验"
+    },
+    "来源": "equipdata.lua:297-303"
+   }
+  ],
+  "respond": {
+   "sc": 13015,
+   "template": {
+    "result": 0,
+    "mat_list": "result.mat_list（剩余/返还材料，SC_13015 有 mat_list 字段）"
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/equipaction.lua:69-107,202-219; data/equipdata.lua:17-60,297-303; protocol/p13_pb.lua:96-102,577; config/gamesetting.lua:538-544,974-982",
+  "notes": "装备强化：mat_list 为经验道具（40801-40803，ItemCfg param 给经验，类型同英雄 40101-40104 模式），equip_list 为直接吃掉的素材装备（客户端 TurnMatList 传纯 id 数组；EQUIP_LIST 结构为 {pos,equip_id}，此处是 repeated 整型）。强化金币=消耗经验×1（equip_strengthen_gold_cost=1）。equip 表 detail 更新 exp；等级由 exp 对照 EquipExpCfg[level]['exp_sum_'+starlevel] 换算（equipdata.lua:84-95）。SC_13015 带 mat_list。 【2026-08-16 让位代码版 EquipEnhanceOp/EquipBreakOp（配置表驱动实现）】"
+ },
+ "_13022_spec": {
+  "sc": 13023,
+  "name": "装备突破（升阶）",
+  "cs_schema": {
+   "equip_id": "uint64"
+  },
+  "validate": {
+   "required": [
+    "equip_id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "query",
+    "条件": "userLevel >= GameSetting.equip_break_user_level.value[now_break_level+1]",
+    "来源": "equipaction.lua:112-116, gamesetting.lua:468-478"
+   },
+   {
+    "op": "deduct_currency",
+    "currency_id": "2(金币)",
+    "num": "EquipMaterialCfg[equip.break_cost[now_break_level+1]].item_list 中 item[1]==2 的数量",
+    "来源": "equipdata.lua:211-231"
+   },
+   {
+    "op": "deduct_materials",
+    "items": "EquipMaterialCfg[equip.break_cost[now_break_level+1]].item_list 其余项（如 {{40501,9}}）",
+    "表": "material",
+    "来源": "equipmaterialcfg.lua:1-60"
+   },
+   {
+    "op": "upsert",
+    "table": "equip",
+    "row": {
+     "id": "req.equip_id",
+     "detail.now_break_level": "now_break_level + 1"
+    },
+    "来源": "equipdata.lua:309-318"
+   }
+  ],
+  "respond": {
+   "sc": 13023,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/equipaction.lua:108-157; data/equipdata.lua:211-231,309-318; config/equipmaterialcfg.lua:1-60; config/gamesetting.lua:468-478; protocol/p13_pb.lua:112-115",
+  "notes": "装备突破：消耗按 EquipCfg[prefab].break_cost[now_break_level+1] 指向的 EquipMaterialCfg 条目，item_list 中 {2,num} 为金币、其余为材料（如 1001 配置=500金币+9×40501）。成功后 now_break_level+1，max_level 提升（equipcfg max_level 数组）。响应仅 result。 【2026-08-16 让位代码版 EquipEnhanceOp/EquipBreakOp（配置表驱动实现）】"
+ },
+ "13012": {
+  "sc": 13013,
+  "name": "装备穿戴/替换（EquipSwap）",
+  "cs_schema": {
+   "hero_id": "uint32",
+   "equip_id": "uint64",
+   "pos": "uint32"
+  },
+  "validate": {
+   "required": [
+    "hero_id",
+    "equip_id",
+    "pos"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert",
+    "table": "equip",
+    "row": {
+     "id": "req.equip_id",
+     "hero_id": "req.hero_id"
+    },
+    "keys": [
+     "uid",
+     "id"
+    ],
+    "desc": "装备绑定英雄(13012 EquipSwap)"
+   }
+  ],
+  "respond": {
+   "sc": 13013,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/heroaction.lua:282-295; data/herodata.lua:115-137; protocol/p13_pb.lua:90-95,73-82",
+  "notes": "装备穿戴：EQUIP 网络结构含 hero_id 字段（EQUIP_HERO_ID，p13_pb.lua:77）；客户端 EquipData:GetEquipMap 由 equip_id→hero_id 映射。卸下全部用 13018→13019（EquipUnloadAll）。响应仅 result。"
+ },
+ "13016": {
+  "sc": 13017,
+  "name": "装备锁定/解锁",
+  "cs_schema": {
+   "equip_id": "uint64",
+   "is_lock": "uint32(0/1)"
+  },
+  "validate": {
+   "required": [
+    "equip_id",
+    "is_lock"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert",
+    "table": "equip",
+    "row": {
+     "id": "req.equip_id",
+     "detail.is_lock": "req.is_lock == 1"
+    },
+    "来源": "equipdata.lua:305-307"
+   }
+  ],
+  "respond": {
+   "sc": 13017,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/equipaction.lua:45-68; data/equipdata.lua:305-307; protocol/p13_pb.lua:103-107",
+  "notes": "客户端锁定后不能强化/分解。响应仅 result。"
+ },
+ "13024": {
+  "sc": 13025,
+  "name": "装备分解",
+  "cs_schema": {
+   "equip_id_list": "repeated uint64"
+  },
+  "validate": {
+   "required": [
+    "equip_id_list"
+   ]
+  },
+  "apply": [
+   {
+    "op": "remove_equips",
+    "equip_ids": "req.equip_list",
+    "desc": "分解删除装备(简化)"
+   }
+  ],
+  "respond": {
+   "sc": 13025,
+   "template": {
+    "result": 0,
+    "return_mat_list": "result.return_mat_list（SC_13025 有 return_mat_list 字段）"
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/equipaction.lua:31-44; data/equipdata.lua:62-82,320-330; protocol/p13_pb.lua:116-120; config/gamesetting.lua:545-555",
+  "notes": "分解返还材料由 EquipStruct.GetBreakCostReturn 计算（equip_break_cost_return 按稀有度、equip_resolve_num 返还 41002 等）。SC_13025 带 return_mat_list。 | 2026-08-15 清洗：材料返还公式暂不可执行，仅删除装备"
+ },
+ "43004": {
+  "sc": 43005,
+  "name": "战斗装备·切换上场套装",
+  "cs_schema": {
+   "equip_suit_id": "uint32"
+  },
+  "validate": {
+   "required": [
+    "equip_suit_id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert",
+    "table": "battle_equip",
+    "row": {
+     "stage_id": "unknown（当前关卡/玩法实例）",
+     "up_suit_id": "req.equip_suit_id"
+    },
+    "说明": "battle_equip 表当前字段为 stage_id/name/drop_lib_id/insure_times/next_refresh_time，无套装列，服务端需新增或复用 unknown 字段",
+    "来源": "battleequipaction.lua:13-24, account_db.py:226-234"
+   }
+  ],
+  "respond": {
+   "sc": 43005,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/battleequipaction.lua:13-24; protocol/p13_pb.lua（43001-43005 不在 p13，归属 battle_equip 独立协议，sc 号按 SendWithLoadingNew 第三参确认）",
+  "notes": "battleequipaction 是独立玩法（战斗装备掉落/保底/套装），非常规装备强化。43002→43003 请求信息、43004→43005 切换上场套装。其数据落 battle_equip 表（按 stage_id），与 equip 表无关；具体套装字段未在 DB/协议确认，标 unknown。"
+ },
+ "17028": {
+  "sc": 17029,
+  "name": "累计签到：打开视图",
+  "cs_schema": {},
+  "validate": {
+   "required": []
+  },
+  "apply": [],
+  "respond": {
+   "sc": 17029,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/accumulatesignaction.lua:16-17(OpenAccumulateSignView)",
+  "notes": "空请求仅打开累计签到界面。累计签到数据由服务器主动推送 sc_17027(version/open_sign/login_days/award_ids) 到 accumulatesigndata.lua:19-26。配置表 activitycumulativesigncfg.lua(id+config_list 天数档) 与 AccumulateLoginCfg。数据落 accumulate_sign 表。无数据变更，仅确认开放权限后回包。"
+ },
+ "17030": {
+  "sc": 17031,
+  "name": "累计签到：领取奖励",
+  "cs_schema": {
+   "id_list": "repeated uint32"
+  },
+  "validate": {
+   "required": [
+    "id_list"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert",
+    "table": "accumulate_sign_award",
+    "row": {
+     "uid": "session.uid",
+     "award_id": "req.id_list[].award_id",
+     "update_ts": "now"
+    }
+   },
+   {
+    "op": "grant_items_from_cfg",
+    "cfg": "AccumulateLoginCfg[id].reward"
+   }
+  ],
+  "respond": {
+   "sc": 17031,
+   "template": {
+    "result": 0,
+    "item": "result.item"
+   },
+   "items": [
+    {
+     "item_id": "AccumulateLoginCfg[id].reward",
+     "item_num": "unknown"
+    }
+   ]
+  },
+  "lua_source": "decompiled_v2/x64/game/action/accumulatesignaction.lua:23-27(GetAccumulateRewardView), 28-36(OnGetAccumulateRewardView 消费 slot0.item/slot1.id_list)",
+  "notes": "按 id_list 领取累计登录奖励。幂等：accumulate_sign_award(uid,award_id) 已领拒；需校验 login_days >= AccumulateLoginCfg[id].num。响应 sc_17031 字段 result+item(奖励列表 item_net_rec)。奖励来自 AccumulateLoginCfg(按 version)。折扣购买/战令档位为 sc_17033 另一系统(accumulate_sign_discount/accumulate_sign_bp 表)，非本条目。"
+ },
+ "28016": {
+  "sc": 28017,
+  "name": "任务活动点领奖（每日/每周活跃度）",
+  "cs_schema": {
+   "need_active_point": "uint32",
+   "activity_pt_id": "uint32"
+  },
+  "validate": {
+   "required": [
+    "need_active_point"
+   ]
+  },
+  "apply": [
+   {
+    "op": "deduct_point",
+    "table": "activity_pt",
+    "activity_pt_id": "req.activity_pt_id",
+    "need": "req.need_active_point"
+   },
+   {
+    "op": "upsert",
+    "table": "activity_pt",
+    "row": {
+     "activity_pt_id": "req.activity_pt_id",
+     "get_id_list": "append(req.need_active_point)"
+    }
+   }
+  ],
+  "respond": {
+   "sc": 28017,
+   "template": {
+    "result": 0,
+    "reward_list": "ActivityPtCfg[activity_pt_id].reward[need档]"
+   },
+   "items": [
+    {
+     "item_id": "unknown",
+     "item_num": "unknown"
+    }
+   ]
+  },
+  "lua_source": "decompiled_v2/x64/game/action/activityptaction.lua:9-31(TaskDailyGetReward), 13-16(SendWithLoadingNew 28016); 客户端自动联动: taskaction.lua:165-198(PostSubmitTaskList_DAILY/WEEK); 数据库: activity_pt 表(activity_pt_id/active_point/get_id_list)",
+  "notes": "活动点领取（每日1/每周3）。条件：active_point >= need_active_point 且该档未领(get_id_list 幂等)。奖励来自 ActivityPtCfg[activity_pt_id].reward[need_active_point 对应档]。任务一键领取后客户端自动逐个调此 cs。属任务系统活动点联动，原语需 deduct_point 校验。"
+ },
+ "60054": {
+  "sc": 60055,
+  "name": "活动积分奖励领取（积分档位领奖）",
+  "cs_schema": {
+   "point_reward_id_list": "repeated uint32"
+  },
+  "validate": {
+   "required": [
+    "point_reward_id_list"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert",
+    "table": "activity_point_reward",
+    "row": {
+     "activity_id": "ActivityPointRewardCfg[id].activity_id",
+     "reward_id": "req.point_reward_id_list[].reward_id",
+     "update_ts": "now"
+    }
+   },
+   {
+    "op": "grant_items_from_cfg",
+    "cfg": "ActivityPointRewardCfg[id].reward_item_list"
+   }
+  ],
+  "respond": {
+   "sc": 60055,
+   "template": {
+    "result": 0,
+    "reward_list": "result.reward_list"
+   },
+   "items": [
+    {
+     "item_id": 53001,
+     "item_num": 1
+    },
+    {
+     "item_id": 40803,
+     "item_num": 2
+    },
+    {
+     "item_id": 2,
+     "item_num": 500
+    }
+   ]
+  },
+  "lua_source": "decompiled_v2/x64/game/action/activityaction.lua:519-546(ReceivePointReward/OnReceivePointReward), 579-593(GetBonus/OnGetBonusCallback); 配置: config/activitypointrewardcfg.lua(id/activity_id/need/reward_item_list/need_item_id/special_level); 数据库: activity_point_reward(uid,activity_id,reward_id)",
+  "notes": "积分档位领奖。校验：玩家活动积分 >= ActivityPointRewardCfg[id].need，need_item_id>0 时还需持有指定道具(特殊档位)。幂等：activity_point_reward 表 (uid,activity_id,reward_id) 已领拒。响应 sc_60055 result+reward_list。奖励来自 reward_item_list(多道具组)。样例 items 为 50401 档(need=1000) 真实配置。需新原语 grant_items_from_cfg 按配置表发奖。"
+ },
+ "_58002_spec": {
+  "sc": 58003,
+  "name": "获取后宅全量详情（进入后宅主界面）",
+  "cs_schema": {
+   "nothing": "uint32"
+  },
+  "validate": {
+   "required": [
+    "nothing"
+   ]
+  },
+  "apply": [
+   {
+    "op": "query",
+    "table": "backhome_*",
+    "cond": "uid=session.uid"
+   }
+  ],
+  "respond": {
+   "sc": 58003,
+   "template": {
+    "result": 0,
+    "canteens": "canteen_net_rec[](id/entrust/accruing_earnings/careers/signature_dish/business/attractive)",
+    "ingredients": "item_net_rec[](食材库存)",
+    "food": "food_net_rec[](id/proficiency/num 菜品熟练度)",
+    "dorms": "dorm_net_rec[](id/pos_id/archives_id/layout/liked_num/give_furnitures/exp)",
+    "exhibition_id": "result.exhibition_id",
+    "furnitures": "furniture_net_rec[](持有家具)",
+    "suit_id_list": "已解锁套件",
+    "hero_list": "backhome_hero_net_rec[]",
+    "canteen_furnitures": "食堂家具 level"
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/backhomeaction.lua:94-116(GetAllDetailInfo/GetAllDetailInfoCallBack)",
+  "notes": "全量详情请求（nothing=1 占位）。客户端消费方：BackHomeDataManager:InitAllDetailData 分流到 CanteenData/BackHomeHero/宿舍/家具等。数据落 backhome 系列全部 11 张表。响应字段结构见 lua_proto_messages.json sc_58003:28094-28324 区域（canteens/ingredients/food/dorms/exhibition_id/template/furnitures/suit/hero 等）。 【2026-08-16 规格稿让位：不可运行配置遮蔽可用 handler，改名禁注册，handler 接管（见 操作集体检报告_20260816.md）】"
+ },
+ "58010": {
+  "sc": 58011,
+  "name": "摆放家具（保存房间布局）",
+  "cs_schema": {
+   "architecture_id": "uint32",
+   "furniture_layout": "layout_net_rec{temp_id:uint32, furniture_pos_list:furniture_pos_list_net_rec[]{type:uint32, furniture_pos:furniture_pos_net_rec[]{furniture_id,x,y,rotation}, default_suit_id:uint32}}",
+   "picture_link": "string optional"
+  },
+  "validate": {
+   "required": [
+    "architecture_id",
+    "furniture_layout"
+   ]
+  },
+  "apply": [
+   {
+    "op": "set_dorm_layout",
+    "table": "backhome_dorm",
+    "dorm_id": "req.architecture_id",
+    "layout": "req.furniture_layout"
+   },
+   {
+    "op": "upsert",
+    "table": "backhome_dorm",
+    "row": {
+     "uid": "session.uid",
+     "dorm_id": "req.architecture_id",
+     "layout_json": "req.furniture_layout",
+     "picture_link": "req.picture_link",
+     "update_ts": "now"
+    }
+   }
+  ],
+  "respond": {
+   "sc": 58011,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/dormaction.lua:163-172(发送), 175-196(SetFurListInMapCallBack 消费 furniture_layout.temp_id 同步模板)",
+  "notes": "摆放/移动家具保存。furniture_pos_list 按墙面 type 分 5 组(1左墙/2右墙/3前墙/4后墙/5地面)，坐标 x/y/rotation 为浮点×DormConst.POS_PRECISION 取整。temp_id>0 时为应用模板布局(客户端只发 temp_id+furniture_pos_list={})；temp_id=0 时为手动摆布局全量上报。校验：家具必须属于配置的 tileType(客户端 CheckFurTileType)。数据操作=覆盖 backhome_dorm.layout，不涉及家具数量增减。需新原语 set_dorm_layout。"
+ },
+ "58130": {
+  "sc": 58131,
+  "name": "解锁后宅建筑（宿舍房间）",
+  "cs_schema": {
+   "architecture_id": "uint32",
+   "pos_id": "uint32"
+  },
+  "validate": {
+   "required": [
+    "architecture_id",
+    "pos_id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "deduct_currency",
+    "currency_id": 2,
+    "num": 1000,
+    "desc": "服务端自定解锁消耗：金币×1000（无本地配置，2026-08-15 定稿）"
+   },
+   {
+    "op": "upsert",
+    "table": "backhome_dorm",
+    "row": {
+     "dorm_id": "req.architecture_id",
+     "pos_id": "req.pos_id"
+    },
+    "keys": [
+     "uid",
+     "dorm_id"
+    ]
+   }
+  ],
+  "respond": {
+   "sc": 58131,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/dormaction.lua:198-211(UnLockDormArchitecture/UnLockDormArchitectureCallBack)",
+  "notes": "解锁建筑位。回调消费 architecture_id+pos_id → DormitoryData:UnLockDormArchitecture。解锁消耗服务端自定（金币×1000，2026-08-15 老大定稿）。落 backhome_dorm。"
+ },
+ "58132": {
+  "sc": 58133,
+  "name": "英雄入住后宅房间（部署/换岗/入住）",
+  "cs_schema": {
+   "architecture_id": "uint32",
+   "hero_id": "repeated uint32"
+  },
+  "validate": {
+   "required": [
+    "architecture_id",
+    "hero_id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert_dorm_hero",
+    "table": "backhome_dorm_hero",
+    "dorm_id": "req.architecture_id",
+    "hero_ids": "req.hero_id"
+   },
+   {
+    "op": "upsert",
+    "table": "backhome_hero",
+    "row": {
+     "uid": "session.uid",
+     "archives_id": "DormData:GetHeroArchiveID(req.hero_id)",
+     "update_ts": "now"
+    }
+   }
+  ],
+  "respond": {
+   "sc": 58133,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/dormaction.lua:213-269(DeployHeroInRoom/DeployHeroInRoomCallBack)",
+  "notes": "三种部署语义由客户端第三参 slot2 区分：Place=摆放入住、ReCall=召回、Occupy=占用入住(核心逻辑)。hero_id 为 repeated(archives_id 列表，实际传 1 个)。Occupy 时客户端回调会刷新英雄疲劳/房间归属并触发 DormRoomTools:RefreshDormExp(宿舍经验)与 GetDormLevelAward(升级奖励)。服务端需落 backhome_dorm_hero(uid,dorm_id,hero_id) 并更新 backhome_hero 对应英雄状态。错误码 BACKHOME_HERO_OCCUPYED(英雄已在岗/外出) 见 backhomeaction.lua:184-189。"
+ },
+ "58134": {
+  "sc": 58135,
+  "name": "召回后宅英雄（私有宿舍撤回）",
+  "cs_schema": {
+   "architecture_id": "uint32",
+   "hero_id": "uint32"
+  },
+  "validate": {
+   "required": [
+    "architecture_id",
+    "hero_id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert_dorm_hero",
+    "table": "backhome_dorm_hero",
+    "dorm_id": "req.architecture_id",
+    "hero_ids": "remove(req.hero_id)"
+   }
+  ],
+  "respond": {
+   "sc": 58135,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/dormaction.lua:271-304(RecallHeroInPrivateDorm/RecallHeroInPrivateDormCallBack)",
+  "notes": "从私有宿舍召回英雄。回调还会把该英雄从公共宿舍(PublicDorm)的 archiveIDList 移除(服务器端同逻辑：删除 backhome_dorm_hero 对应行)。响应无额外字段。"
+ },
+ "58136": {
+  "sc": 58137,
+  "name": "赠送家具给英雄（提升宿舍经验）",
+  "cs_schema": {
+   "hero_id": "uint32",
+   "furniture": "repeated item_net_rec{id:uint32, num:uint32}"
+  },
+  "validate": {
+   "required": [
+    "hero_id",
+    "furniture"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert",
+    "table": "backhome_furniture",
+    "row": {
+     "uid": "session.uid",
+     "furniture_id": "req.furniture[].id",
+     "give_num": "backhome_furniture.give_num + req.furniture[].num",
+     "num": "backhome_furniture.num - req.furniture[].num",
+     "update_ts": "now"
+    }
+   },
+   {
+    "op": "set_dorm_layout",
+    "table": "backhome_dorm",
+    "dorm_id": "dorm_of_hero(req.hero_id)",
+    "exp": "exp + sum(BackHomeFurnitureCfg[fid].exp * num)"
+   }
+  ],
+  "respond": {
+   "sc": 58137,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/dormaction.lua:306-355(GiftFurToHero/GiftFurToHeroCallBack)",
+  "notes": "把持有的家具赠给英雄(对应 backhome_furniture.give_num 赠送数)。回调 GiftFur 累加赠数、RefreshDormExp 加宿舍经验，经验满触发升级 GetDormLevelAward。服务器需：扣 backhome_furniture.num、加 give_num、backhome_dorm.exp 按 BackHomeFurnitureCfg[id].exp×num 增加，并检查 backhomedormlevel.lua 档位是否升级发奖。req.furniture 中 num>0 才上报(客户端已过滤)。"
+ },
+ "58138": {
+  "sc": 58139,
+  "name": "喂食英雄（消耗食物道具回疲劳）",
+  "cs_schema": {
+   "type": "uint32",
+   "hero_id": "uint32"
+  },
+  "validate": {
+   "required": [
+    "type",
+    "hero_id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "fatigue_update",
+    "table": "backhome_hero",
+    "archives_id": "req.hero_id",
+    "fatigue": "result.fatigue_list[]"
+   },
+   {
+    "op": "set_material",
+    "material_id": "FoodCfg[type].id",
+    "num": "deduct(FoodCfg[type].cost)"
+   }
+  ],
+  "respond": {
+   "sc": 58139,
+   "template": {
+    "result": 0,
+    "fatigue_list": "hero_fatigue_net_rec[](archives_id:uint32, fatigue:uint32)"
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/dormaction.lua:357-384(GiftFoodToHero/GiftFoodToHeroCallBack)",
+  "notes": "type=1 时 hero_id 发 0(整包喂?)，type≠1 时发指定英雄。回调消费 slot0.fatigue_list(archives_id+fatigue) 逐英雄 SetFatigue，疲劳值变化则 FeedFoodTime 计数。服务器需扣对应食物道具(客户端由 itemaction 通用入口 AddBackHomeItem 收 CANTEEN_INGREDIENTS 食材，喂食消耗的具体道具/食物成本标注 unknown，需对照 FoodCfg/BackHomeCanteenFoodCfg)。落 backhome_hero.fatigue/feed_times/total_feed_times。"
+ },
+ "58146": {
+  "sc": 58147,
+  "name": "调整后宅建筑位置（交换宿舍顺序）",
+  "cs_schema": {
+   "dorm_pos_list": "repeated dorm_pos_net_rec{architecture_id:uint32, pos_id:uint32}"
+  },
+  "validate": {
+   "required": [
+    "dorm_pos_list"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert",
+    "table": "backhome_dorm",
+    "row": {
+     "uid": "session.uid",
+     "dorm_id": "req.dorm_pos_list[].architecture_id",
+     "pos_id": "req.dorm_pos_list[].pos_id",
+     "update_ts": "now"
+    }
+   }
+  ],
+  "respond": {
+   "sc": 58147,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/dormaction.lua:531-550(RevisePrivateDormPos/RevisePrivateDormPosCallBack)",
+  "notes": "批量调整宿舍位置(拖动排序)。回调消费 DormitoryData:RevisePrivateDormPosData。落 backhome_dorm.pos_id。"
+ },
+ "58154": {
+  "sc": 58155,
+  "name": "后宅节奏小游戏结算",
+  "cs_schema": {
+   "stage_id": "uint32",
+   "percentage_complete": "uint32",
+   "hero_id": "uint32"
+  },
+  "validate": {
+   "required": [
+    "stage_id",
+    "percentage_complete",
+    "hero_id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "fatigue_update",
+    "table": "backhome_hero",
+    "archives_id": "req.hero_id",
+    "fatigue": "result.fatigue"
+   },
+   {
+    "op": "grant_items",
+    "items": "result.reward_list"
+   },
+   {
+    "op": "set_currency",
+    "currency_id": "DORM_DAILY_COIN",
+    "num": "result.reward_list[1].num"
+   }
+  ],
+  "respond": {
+   "sc": 58155,
+   "template": {
+    "result": 0,
+    "reward_list": "item_net_rec[](id, num)",
+    "fatigue": "result.fatigue"
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/dormaction.lua:642-672(SettlementRhythmGame/SettlementRhythmGameCallBack)",
+  "notes": "小游戏结算。回调消费 slot0.fatigue(英雄新疲劳)与 slot0.reward_list(id+num)；客户端把 reward_list[1] 的 num 加到 DormitoryData 每日货币(DormitoryData:AddDailCurrencyNum)。奖励明细由 CORE 按 stage 配置产出(具体表 unknown)。落 backhome_hero.fatigue。"
+ },
+ "58126": {
+  "sc": 58127,
+  "name": "设置后宅英雄皮肤",
+  "cs_schema": {
+   "hero_id": "uint32",
+   "skin_id": "uint32",
+   "source": "uint32"
+  },
+  "validate": {
+   "required": [
+    "hero_id",
+    "skin_id",
+    "source"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert",
+    "table": "backhome_hero",
+    "row": {
+     "uid": "session.uid",
+     "archives_id": "BackHomeHeroSkinCfg[req.skin_id].hero_id",
+     "skin_id": "req.skin_id",
+     "update_ts": "now"
+    }
+   }
+  ],
+  "respond": {
+   "sc": 58127,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/dormaction.lua:674-695(SetHeroSkin/SetHeroSkinCallBack)",
+  "notes": "切换后宅皮肤。hero_id 由 BackHomeHeroSkinCfg[skin_id].hero_id 配置带出。回调消费 skin_id 后 SetHeroSkinID。皮肤归属字段 backhome_hero 表未建列，标注 unknown(可存 data_json)。"
+ },
+ "58158": {
+  "sc": 58159,
+  "name": "设置家具模板允许他人保存",
+  "cs_schema": {
+   "is_open": "bool"
+  },
+  "validate": {
+   "required": [
+    "is_open"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert",
+    "table": "backhome_meta",
+    "row": {
+     "uid": "session.uid",
+     "share_is_open": "req.is_open ? 1 : 0",
+     "update_ts": "now"
+    }
+   }
+  ],
+  "respond": {
+   "sc": 58159,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/dormaction.lua:697-708(SetFurnitureTemplatCanSave/SetFurnitureTemplatCanSaveCallBack)",
+  "notes": "开关注销模板可被他人保存。落 backhome_meta.share_is_open。"
+ },
+ "58052": {
+  "sc": 58053,
+  "name": "给他人宿舍点赞",
+  "cs_schema": {
+   "user_id": "uint64",
+   "architecture_id": "uint32"
+  },
+  "validate": {
+   "required": [
+    "user_id",
+    "architecture_id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert",
+    "table": "backhome_dorm",
+    "row": {
+     "uid": "req.user_id",
+     "dorm_id": "req.architecture_id",
+     "liked_num": "backhome_dorm.liked_num + 1",
+     "update_ts": "now"
+    }
+   }
+  ],
+  "respond": {
+   "sc": 58053,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/dormaction.lua:713-739(LikeDormRoom)",
+  "notes": "给被访者宿舍点赞。客户端回调本地 likeNum/todayLikeNum+1。服务器需限每日/每用户次数(防刷，具体配置 unknown)。落被赞者的 backhome_dorm.liked_num。"
+ },
+ "58218": {
+  "sc": 58219,
+  "name": "锁定/解锁后宅英雄（禁止入住食堂等岗位）",
+  "cs_schema": {
+   "hero_id": "uint32",
+   "type": "uint32"
+  },
+  "validate": {
+   "required": [
+    "hero_id",
+    "type"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert",
+    "table": "backhome_hero",
+    "row": {
+     "uid": "session.uid",
+     "archives_id": "req.hero_id",
+     "is_lock": "req.type",
+     "update_ts": "now"
+    }
+   }
+  ],
+  "respond": {
+   "sc": 58219,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/backhomeaction.lua:173-193(SetLockBackHomeHero/OnSetLockBackHomeHero)",
+  "notes": "type=1 锁定/type=0 解锁。服务器校验：已占用(BACKHOME_HERO_OCCUPYED)的英雄锁定时报错，错误分支客户端按英雄状态弹 InCanteenJob/InCanteenEntrust 提示。落 backhome_hero.is_lock。"
+ },
+ "58100": {
+  "sc": 58101,
+  "name": "食堂委托一键派遣（批量）",
+  "cs_schema": {
+   "architecture_id": "uint32",
+   "entrust_list": "repeated one_key_entrust_net_rec{pos:uint32, hero_list:repeated uint32, duration:uint32 optional}"
+  },
+  "validate": {
+   "required": [
+    "architecture_id",
+    "entrust_list"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert_canteen_entrust",
+    "table": "backhome_canteen_entrust",
+    "pos": "req.entrust_list[].pos",
+    "task_id": "entrust_at_pos(pos).id",
+    "hero_list": "req.entrust_list[].hero_list",
+    "duration": "req.entrust_list[].duration",
+    "start_time": "now"
+   }
+  ],
+  "respond": {
+   "sc": 58101,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/canteenaction.lua:134-171(BatchSendTaskDispatchInfo), 173-182(OnBatchSendTaskDispatchInfo)",
+  "notes": "一键派遣全部可派遣委托。architecture_id 恒为 DormConst.CANTEEN_ID=4(dormconst.lua:4)。duration 由 BackHomeCanteenTaskCfg[id].time[timeLevel][1] 客户端算出(秒)。回调逐条 ConfirmEntrustListCallBack。服务器需校验英雄不在其他岗位/未锁定，落 backhome_canteen_entrust(uid,pos,task_id,hero_list,start_time,duration,refresh_times)。需新原语 upsert_canteen_entrust。"
+ },
+ "58102": {
+  "sc": 58103,
+  "name": "食堂委托单个派遣/取消",
+  "cs_schema": {
+   "architecture_id": "uint32",
+   "pos": "uint32",
+   "hero_list": "repeated uint32",
+   "duration": "uint32 optional"
+  },
+  "validate": {
+   "required": [
+    "architecture_id",
+    "pos",
+    "hero_list"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert_canteen_entrust",
+    "table": "backhome_canteen_entrust",
+    "pos": "req.pos",
+    "hero_list": "req.hero_list",
+    "duration": "req.duration",
+    "start_time": "now"
+   }
+  ],
+  "respond": {
+   "sc": 58103,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/canteenaction.lua:184-221(SendTaskDispatchInfo/OnSolveTaskDispatchCallBack)",
+  "notes": "单委托派遣。req.hero_list 为空数组=取消该委托(回调显示 CANTEEN_TASK_DISPATCH_CANCEL)；非空=派遣。客户端回调 ConfirmEntrustListCallBack(slot1)。duration 由客户端按 BackHomeCanteenTaskCfg[id].time[timeLevel][1] 计算传入；不传时服务器按默认时间等级算。"
+ },
+ "58104": {
+  "sc": 58105,
+  "name": "设置食堂工作安排（岗位）",
+  "cs_schema": {
+   "architecture_id": "uint32",
+   "type": "uint32",
+   "hero_id": "uint32"
+  },
+  "validate": {
+   "required": [
+    "architecture_id",
+    "type",
+    "hero_id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert",
+    "table": "backhome_canteen_career",
+    "row": {
+     "uid": "session.uid",
+     "ctype": "req.type",
+     "hero_id": "req.hero_id",
+     "update_ts": "now"
+    }
+   }
+  ],
+  "respond": {
+   "sc": 58105,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/canteenaction.lua:223-275(SetCharacterJob/OnSetCharacterJobCallBack)",
+  "notes": "type=DORM_RESTAURANT_SET_JOB_TYPE 岗位(1~3)；hero_id=0 表示取消该岗位(回调走 NPC 补位分支)。architecture_id 固定 CANTEEN_ID=4。回调消费 type+hero_id 刷新岗位列表。落 backhome_canteen_career(uid,ctype,hero_id)。"
+ },
+ "58106": {
+  "sc": 58107,
+  "name": "领取食堂自动经营收益",
+  "cs_schema": {
+   "architecture_id": "uint32"
+  },
+  "validate": {
+   "required": [
+    "architecture_id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "set_currency",
+    "currency_id": "CANTEEN_EARNINGS",
+    "num": "result.earnings"
+   },
+   {
+    "op": "upsert",
+    "table": "backhome_canteen_meta",
+    "row": {
+     "uid": "session.uid",
+     "canteen_id": "req.architecture_id",
+     "accruing_earnings": "backhome_canteen_meta.accruing_earnings + result.earnings",
+     "earnings": 0,
+     "last_receive_time": "now",
+     "update_ts": "now"
+    }
+   }
+  ],
+  "respond": {
+   "sc": 58107,
+   "template": {
+    "result": 0,
+    "earnings": "result.earnings"
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/canteenaction.lua:277-289(ReceiveCanteenAutoAward/OnCanteenAutoAwardCallBack)",
+  "notes": "自动经营模式下领取累积收益。回调消费 slot0.earnings → ReceiveCurPenEarSuccess(totalEar+=earnings, earnings=0, last_receive_earnings_time=now)。冷却由 GameSetting.canteen_receive_time_interval 控制(客户端 GetAutoNextAwardTime 展示倒计时，服务器需校验)。收益货币类型 = CanteenData:GetAutoAwardNum 展示的每日后宅币，具体 currency_id 对照 unknown。"
+ },
+ "58108": {
+  "sc": 58109,
+  "name": "切换食堂经营模式（自动/手动）",
+  "cs_schema": {
+   "architecture_id": "uint32",
+   "cmd": "uint32"
+  },
+  "validate": {
+   "required": [
+    "architecture_id",
+    "cmd"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert",
+    "table": "backhome_canteen_meta",
+    "row": {
+     "uid": "session.uid",
+     "canteen_id": "req.architecture_id",
+     "mode": "req.cmd==0 ? auto : manual",
+     "update_ts": "now"
+    }
+   }
+  ],
+  "respond": {
+   "sc": 58109,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/canteenaction.lua:291-323(ChangeCanteenMode/ChangeCanteenModeCallBack)",
+  "notes": "cmd=0 自动 / cmd=1 手动。切自动时若手动结算列表非空，客户端先发 58120 CanteenManualSettlement 再切(canteendata.lua:166-170)。模式字段 backhome_canteen_meta 表无列，标注 unknown(可存 data_json 或加列)。"
+ },
+ "58012": {
+  "sc": 58013,
+  "name": "刷新食堂委托（单个委托位）",
+  "cs_schema": {
+   "architecture_id": "uint32",
+   "pos": "uint32"
+  },
+  "validate": {
+   "required": [
+    "architecture_id",
+    "pos"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert_canteen_entrust",
+    "table": "backhome_canteen_entrust",
+    "pos": "req.pos",
+    "task_id": "next_random(BackHomeCanteenTaskCfg)",
+    "refresh_times": "backhome_canteen_entrust.refresh_times + 1"
+   }
+  ],
+  "respond": {
+   "sc": 58013,
+   "template": {
+    "result": 0,
+    "entrust": "entrust_net_rec(pos/id/hero_list/tags/num_max/refresh_times/start_time/duration)"
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/canteenaction.lua:325-337(RefreshEntrust/RefreshEntrustCallBack)",
+  "notes": "刷新 pos 位置的委托任务。回调消费 slot0.entrust(entrust_net_rec) → InitEntrustData。刷新次数上限与消耗(货币)由配置约束(客户端红点 CheckUnLockEntrustRedPoint)，具体表 unknown。响应 entrust 为新委托数据。"
+ },
+ "58114": {
+  "sc": 58115,
+  "name": "上架/下架招牌菜（设定售卖菜品与数量）",
+  "cs_schema": {
+   "architecture_id": "uint32",
+   "food_id": "uint32",
+   "sell_num": "uint32"
+  },
+  "validate": {
+   "required": [
+    "architecture_id",
+    "food_id",
+    "sell_num"
+   ]
+  },
+  "apply": [
+   {
+    "op": "upsert",
+    "table": "backhome_canteen_dish",
+    "row": {
+     "uid": "session.uid",
+     "food_id": "req.food_id",
+     "sell_num": "req.sell_num",
+     "sold_num": 0,
+     "sell_earnings": 0,
+     "update_ts": "now"
+    }
+   }
+  ],
+  "respond": {
+   "sc": 58115,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/canteenaction.lua:339-357(SendSignFoodInfo/SetSignFoodCallBack)",
+  "notes": "sell_num>0 上架/调整库存；sell_num=0 下架(客户端 PushFoodToSignList 空参删除)。上架数量上限由食堂家具容量/熟练度决定(CanteenFoodData:CalculateFoodCanCookNum + DormSkillData:CalCanSignFoodNum)。菜品表 backhome_canteen_dish(uid,food_id,sell_num,sold_num,sell_earnings)。下架时删除行。"
+ },
+ "58116": {
+  "sc": 58117,
+  "name": "食堂家具升级（厨房设备）",
+  "cs_schema": {
+   "uid": "uint32"
+  },
+  "validate": {
+   "required": [
+    "uid"
+   ]
+  },
+  "apply": [
+   {
+    "op": "deduct",
+    "currency_id": "BackHomeCanteenFurnitureCfg[type_id].cost_material[level][1]",
+    "num": "BackHomeCanteenFurnitureCfg[type_id].cost_material[level][2]"
+   },
+   {
+    "op": "upsert",
+    "table": "backhome_canteen_furniture",
+    "row": {
+     "uid": "session.uid",
+     "fur_uid": "req.uid",
+     "level": "level + 1",
+     "update_ts": "now"
+    }
+   }
+  ],
+  "respond": {
+   "sc": 58117,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/canteenaction.lua:359-373(CanteenFurnitureUpgrade/CanteenFurnitureUpgradeCallBack)",
+  "notes": "升级食堂家具(炒锅/烤箱等)。uid 是食堂家具实例 uid，type_id 由 BackHomeCanteenFurnitureIDCfg[uid].type_id 映射(如炒锅 941001)。成本在 BackHomeCanteenFurnitureCfg[type_id].cost_material[level](数组按等级，第0项空，第1级 {2,50000} 货币类型2=金币) 与 condition(前置解锁)。回调消费 uid → FurLevelUpCallBack(level+1, 技能更换)。食堂家具等级表未在 account_db SCHEMA 列出，标注 unknown(可能存 data_json 或复用 backhome_furniture)。需新原语 deduct。"
+ },
+ "58018": {
+  "sc": 58019,
+  "name": "领取食堂委托奖励（结算已完成委托）",
+  "cs_schema": {
+   "architecture_id": "uint32",
+   "pos": "repeated uint32"
+  },
+  "validate": {
+   "required": [
+    "architecture_id",
+    "pos"
+   ]
+  },
+  "apply": [
+   {
+    "op": "calc_canteen_earnings",
+    "table": "backhome_canteen_entrust",
+    "pos_list": "req.pos",
+    "reward": "BackHomeCanteenTaskCfg[task_id].reward + extra(成功概率)"
+   },
+   {
+    "op": "fatigue_update",
+    "table": "backhome_hero",
+    "fatigue_list": "result.fatigue_list"
+   },
+   {
+    "op": "grant_items",
+    "items": "result.reward_list"
+   }
+  ],
+  "respond": {
+   "sc": 58019,
+   "template": {
+    "result": 0,
+    "extra_reward": "result.extra_reward",
+    "entrust": "result.entrust",
+    "fatigue_list": "result.fatigue_list"
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/canteenaction.lua:375-408(ReceiveEntrustAward/ReceiveEntrustAwardCallBack)",
+  "notes": "批量领取已完成委托奖励。回调消费 slot0.extra_reward(pos+extra_reward+reward_list)、slot0.entrust(新委托列表)、slot0.fatigue_list。成功判定：BackHomeCanteenTaskCfg[id].base_success + tag_success×匹配标签 - 疲劳修正，ExtraReward 由技能 EntrustExternAwardAdd 加成(canteenaction.lua:8-18)。客户端对 extra_reward 的额外部分再乘 canteen_task_success 系数。服务器需计算 reward_list 并按 entrust_net_rec 刷新委托位。需新原语 calc_canteen_earnings。"
+ },
+ "58120": {
+  "sc": 58121,
+  "name": "食堂手动经营结算（做菜收益结算）",
+  "cs_schema": {
+   "architecture_id": "uint32",
+   "oper_list": "repeated oper_net_rec{food_id:uint32, quality:uint32, guest_uid:uint32, guest_id:uint32, special_event:uint32, evaluate:uint32}"
+  },
+  "validate": {
+   "required": [
+    "architecture_id",
+    "oper_list"
+   ]
+  },
+  "apply": [
+   {
+    "op": "calc_canteen_earnings",
+    "table": "backhome_canteen_dish",
+    "oper_list": "req.oper_list",
+    "unit_cost": "BackHomeCanteenFoodCfg[food_id].sell"
+   },
+   {
+    "op": "set_material",
+    "material_id": "BackHomeCanteenFoodCfg[food_id].ingredient_list[].id",
+    "num": "deduct(ingredient_list[].num)"
+   },
+   {
+    "op": "upsert",
+    "table": "backhome_canteen_meta",
+    "row": {
+     "uid": "session.uid",
+     "canteen_id": "req.architecture_id",
+     "accruing_earnings": "backhome_canteen_meta.accruing_earnings + earnings",
+     "update_ts": "now"
+    }
+   }
+  ],
+  "respond": {
+   "sc": 58121,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/canteenaction.lua:410-435(CanteenManualSettlement/CanteenManualSettlementCallBack)",
+  "notes": "手动经营结束结算：oper_list 逐单(food_id+quality+guest+special_event+evaluate) 上报所有完成的料理。菜品单价 BackHomeCanteenFoodCfg[food_id].sell(如 101 明炉烤肉=36)。回调 GetManualAward(slot1) 客户端本地入账。服务器需：按 quality 分档收益求和发货币、扣对应食材(BackHomeCanteenFoodCfg[food_id].ingredient_list {51013,4})、累加 backhome_canteen_meta.accruing_earnings。响应字段仅 result(实际收益随 sc_58023 推送或由 CORE 自定义，标注 unknown)。"
+ },
+ "58024": {
+  "sc": 58025,
+  "name": "解锁食堂委托位",
+  "cs_schema": {
+   "pos": "uint32"
+  },
+  "validate": {
+   "required": [
+    "pos"
+   ]
+  },
+  "apply": [
+   {
+    "op": "deduct_currency",
+    "currency_id": 1,
+    "num": 30,
+    "desc": "服务端自定解锁消耗：钻石×30（无本地配置，2026-08-15 定稿）"
+   },
+   {
+    "op": "upsert",
+    "table": "backhome_canteen_entrust",
+    "row": {
+     "pos": "req.pos",
+     "refresh_times": 0
+    },
+    "keys": [
+     "uid",
+     "pos"
+    ]
+   }
+  ],
+  "respond": {
+   "sc": 58025,
+   "template": {
+    "result": 0,
+    "entrust": "entrust_net_rec(pos/id/hero_list/tags/num_max/refresh_times/start_time/duration)"
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/canteenaction.lua:437-452(UnLockEntrust/UnLockEntrustCallBack)",
+  "notes": "解锁新委托位(pos 1~4)。回调消费 slot0.entrust → InitEntrustData。解锁消耗服务端自定（钻石×30，2026-08-15 老大定稿）。落 backhome_canteen_entrust。"
+ },
+ "58060": {
+  "sc": 58061,
+  "name": "领取被参观奖励（周结算）",
+  "cs_schema": {},
+  "validate": {
+   "required": []
+  },
+  "apply": [
+   {
+    "op": "upsert",
+    "table": "backhome_meta",
+    "row": {
+     "uid": "session.uid",
+     "received_be_visited_gift_num": "backhome_meta.received_be_visited_gift_num + n",
+     "update_ts": "now"
+    }
+   },
+   {
+    "op": "grant_items",
+    "items": "result.be_visited_reward_list[].reward_list"
+   }
+  ],
+  "respond": {
+   "sc": 58061,
+   "template": {
+    "result": 0,
+    "be_visited_reward_list": "dorm_be_visited_reward[](profile_base, reward_list:item_net_rec[], user_id)"
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/backhomeaction.lua:137-171(RequestReward/GetRewardRensponse)",
+  "notes": "空请求领取被参观的周奖励。客户端回调按 #be_visited_reward_list 累加 DormData:UpdateReceivedWeekGiftNum。落 backhome_meta.received_be_visited_gift_num。奖励具体规则(按参观/点赞) unknown。"
+ },
+ "COOK_LOCAL": {
+  "sc": null,
+  "name": "做菜/烹饪（纯客户端，无 cs 协议）",
+  "cs_schema": {},
+  "validate": {
+   "required": []
+  },
+  "apply": [],
+  "respond": {},
+  "lua_source": "decompiled_v2/x64/game/views/dorm/cookfoodview.lua:313-328(CookFinish → CanteenData:CookFoodComplete), 181-216(StartCookFoodQTE); 数据: decompiled_v2/x64/game/data/canteenmanualdata.lua:29-47(CookFoodComplete 本地记账), 55-70(RecordCookFood 进结算单); 食材: canteenfooddata.lua:112+(CalculateFoodCanCookNum)",
+  "notes": "做菜=客户端 QTE 小游戏纯本地逻辑：选菜(BackHomeCanteenFoodCfg)+选口味+QTE 品质(low/normal/high)，产物进 manualSettlementList(RecordCookFood 逐项记录 food_id/quality/guest_uid=0/guest_id=0/special_event=0/evaluate=0)。没有专用做菜 cs cmd，做菜结果仅在手动模式通过 58120(CanteenManualSettlement) 随 oper_list 上报结算；自动模式由服务端按招牌菜定时扣食材(见 sc_58023 del_ingredients 推送)不经过 cs。食材来源：活动/道具奖励通过 itemaction.lua:78-89 AddBackHomeItem 落 backhome_ingredient 表(物品类型 CANTEEN_INGREDIENTS=51xxx)。CORE 无需为做菜实现 cs 处理，但需支持 sc_58023 推送扣食材。"
+ },
+ "_merged": "2026-08-15 合入 shop_mail(5)/hero_equip(13)/sign_task(8)/dorm_cook(27) 共 50 条新增",
+ "_14044_spec": {
+  "sc": 14045,
+  "name": "英雄技能属性强化（专属技能强化）",
+  "cs_schema": {
+   "hero_id": "uint32",
+   "index": "uint32",
+   "num": "uint32"
+  },
+  "validate": {
+   "required": [
+    "hero_id",
+    "index",
+    "num"
+   ]
+  },
+  "apply": [
+   {
+    "op": "query",
+    "条件": "hero.skill[index] 满级(MAX_SKILL_LEVEL) 且 属性等级 < MAX_SKILL_ATTR_LEVEL",
+    "来源": "skilltools.lua:117-129"
+   },
+   {
+    "op": "deduct_materials",
+    "items": "HeroSkillElementCfg[hero_id*100+当前属性等级]['skill_element_cost'..index]",
+    "表": "material",
+    "来源": "skilltools.lua:338-349"
+   },
+   {
+    "op": "upsert",
+    "table": "hero",
+    "row": {
+     "id": "req.hero_id",
+     "skill_intensify_attribute[index].level": "level + req.num"
+    },
+    "来源": "herodata.lua:225-244, hero_hrl_pb.lua:61-63"
+   }
+  ],
+  "respond": {
+   "sc": 14045,
+   "template": {
+    "result": 0
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/heroaction.lua:325-338; data/herodata.lua:225-244; tools/skilltools.lua:117-129,338-349; protocol/p14_pb.lua:181-186; protocol/hero_hrl_pb.lua:61-63",
+  "notes": "技能属性强化是满级技能后的二次强化。消耗按 HeroSkillElementCfg[hero*100+目标等级]['skill_element_cost'..index]（{材料id,数量}），更新 hero.skill_intensify_attribute[index].level（SKILL_INTENSIFY_ATTRIBUTE_NET_REC 的 index/level 字段）。响应仅 result。"
+ },
+ "_58054_spec": {
+  "sc": 58055,
+  "name": "查询宿舍点赞数",
+  "cs_schema": {
+   "architecture_id": "uint32"
+  },
+  "validate": {
+   "required": [
+    "architecture_id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "query",
+    "table": "backhome_dorm",
+    "cond": "dorm_id=req.architecture_id"
+   }
+  ],
+  "respond": {
+   "sc": 58055,
+   "template": {
+    "result": 0,
+    "liked_num": "result.liked_num",
+    "be_visited_num": "result.be_visited_num"
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/dormaction.lua:741-761(AskDormRoomLikeNum)",
+  "notes": "客户端回调消费 slot0.liked_num。be_visited_num(被访次数)需另记，backhome_dorm 无列，标注 unknown。"
+ },
+ "_13058_spec": {
+  "sc": 13059,
+  "name": "装备一键强化（含突破）",
+  "cs_schema": {
+   "equip_id": "uint64",
+   "equip_list": "repeated uint64",
+   "mat_list": "repeated {id, num}",
+   "target_level": "uint32",
+   "break_times": "uint32"
+  },
+  "validate": {
+   "required": [
+    "equip_id",
+    "mat_list"
+   ]
+  },
+  "apply": [
+   {
+    "op": "consume_equips",
+    "equip_ids": "req.equip_list"
+   },
+   {
+    "op": "deduct_materials",
+    "items": "req.mat_list",
+    "表": "material"
+   },
+   {
+    "op": "deduct_currency",
+    "currency_id": "2(金币)",
+    "num": "获得经验数×1"
+   },
+   {
+    "op": "upsert",
+    "table": "equip",
+    "row": {
+     "id": "req.equip_id",
+     "detail.exp": "exp + 获得经验",
+     "detail.now_break_level": "now_break_level + req.break_times（若 ≥1）"
+    },
+    "来源": "equipaction.lua:177-181"
+   }
+  ],
+  "respond": {
+   "sc": 13059,
+   "template": {
+    "result": 0,
+    "mat_list": "result.mat_list"
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/equipaction.lua:158-201; protocol/p13_pb.lua:201-209",
+  "notes": "一键强化=13014+13022 合并：target_level 为目标等级，break_times 为自动突破次数。客户端成功回调里 break_times≥1 时先 ApplyUpgradeEquipSuccess 再 ApplyEquipStrengthSuccess（equipaction.lua:177-181）。SC_13059 带 mat_list。"
+ },
+ "_14120_spec": {
+  "sc": 14121,
+  "name": "英雄一键升级+突破（合并）",
+  "cs_schema": {
+   "hero_id": "uint32",
+   "break_list": "repeated uint32（要突破的阶数列表）",
+   "level": "uint32（目标等级）",
+   "item_list": "repeated {id:uint32, num:uint32}"
+  },
+  "validate": {
+   "required": [
+    "hero_id",
+    "level",
+    "item_list"
+   ]
+  },
+  "apply": [
+   {
+    "op": "deduct_materials",
+    "items": "req.item_list",
+    "desc": "扣经验道具(一键升级)"
+   },
+   {
+    "op": "calc_hero_exp",
+    "hero_id": "req.hero_id",
+    "exp_add": "auto",
+    "desc": "经验自动换算(一键升级)"
+   }
+  ],
+  "respond": {
+   "sc": 14121,
+   "template": {
+    "result": 0,
+    "item_list": "result.item_list（服务端返回消耗后的道具列表，字段来自 SC_14121_ITEM_LIST）"
+   }
+  },
+  "lua_source": "decompiled_v2/x64/game/action/heroaction.lua:237-257; protocol/p14_pb.lua:260-267",
+  "notes": "合并操作：一次请求同时升级（item_list 经验道具+目标 level）与突破（break_list 阶数）。SC_14121 有 result+item_list 字段；客户端 OnHeroLevelUpAndBreak 用 slot0.item_list。细分扣费/等级结算规则与 14014+14036 一致。 | 2026-08-15 清洗：突破成本公式(ΣHeroBreakCfg)暂不可执行，仅升级生效"
+ },
+ "_11010_spec": {
+  "sc": 11011,
+  "name": "每日/七日签到（共用 cs，activity_id 区分）",
+  "cs_schema": {
+   "activity_id": "uint32"
+  },
+  "validate": {
+   "required": [
+    "activity_id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "set_sign",
+    "activity_id": "req.activity_id"
+   },
+   {
+    "op": "set_sign_reward",
+    "reward": [
+     {
+      "item_id": 2,
+      "item_num": 5000
+     }
+    ]
+   }
+  ],
+  "respond": {
+   "sc": 11011,
+   "template": {
+    "result": 0,
+    "item_list": "result.item_list"
+   },
+   "items": [
+    {
+     "item_id": 2,
+     "item_num": 5000
+    }
+   ]
+  },
+  "lua_source": "decompiled_v2/x64/game/action/signaction.lua:17-20(每日 QueryDailySign), 30-33(七日 QuerySevenDaySign); 数据: signdata.lua:10-24; 奖励表: config/signcfg.lua(month/day/reward)",
+  "notes": "activity_id=ActivityConst.SIGN(3) 为每日签到；七日活动传对应 activity_id(如 ActivityConst.SEVENDAYS_SIGN=1)。幂等：sign 表(uid,activity_id,year,month,day,sign_list,last_sign_ts)，当日已签则拒。sc_11011 响应 result+item_list(签到奖励)。服务器主动推送：sc_11013(year/month/day/sign_list, 每日状态)、sc_11015(activity_id/sign_count/last_sign_time, 七日状态)，登录时按需回包。奖励按 SignCfg 表 当前月 day 匹配，非固定 20002/50。 | 2026-08-16 修复：item_list 公式文本→result.item_list 引用；奖励按 SignCfg 第1天(金币2×5000)，完整动态待 calc_sign_reward 原语 | 2026-08-16 修复2：补 sc_17023+sc_53003 推送（素材 3 帧响应链） | 2026-08-16 去硬编码：帧结构改由 skeleton.json 提供（17023+53003+11011）"
+ },
+ "_11081_spec": {
+  "sc": 11082,
+  "name": "签到",
+  "validate": {
+   "required": [
+    "activity_id"
+   ]
+  },
+  "apply": [
+   {
+    "op": "set_sign",
+    "activity_id": "req.activity_id"
+   }
+  ],
+  "respond": {
+   "sc": 11082,
+   "template": {
+    "result": 0,
+    "sign_num": "result.sign_num",
+    "today_buy_num": 0,
+    "left_sign_time": 0
+   },
+   "items": [
+    {
+     "item_id": 20002,
+     "item_num": 50
+    }
+   ]
+  }
+ }
+}
